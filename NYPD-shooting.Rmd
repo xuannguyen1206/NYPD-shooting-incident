@@ -1,0 +1,141 @@
+---
+title: "NYPD-shooting"
+output: pdf_document
+date: "2024-09-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE,warning=FALSE)
+```
+
+# Introduction
+
+This is an analysis for every shooting incident that occurred in NYC going back to 2006. This analysis focuses on if crime occur more often on certain hours and areas.
+
+# 1.Load and tidy dataset
+
+let import the dataset from <https://catalog.data.gov/> but since this link is only for downloading the dataset directly to local machine. Instead I have uploaded the dataset to my Github and used the link below.
+
+```{r loaddata}
+rawData <- read.csv("https://raw.githubusercontent.com/xuannguyen1206/NYPD-shooting-incident/main/NYPD_Shooting_Incident_Data__Historic_.csv")
+```
+
+I notice that column OCCUR_DATE and OCCUR_TIME is chr typed which is not correct so I will change them to approriate type
+
+```{r tidy}
+library(chron)
+rawData$OCCUR_DATE <- as.Date(rawData$OCCUR_DATE, format = "%m/%d/%Y") 
+rawData$OCCUR_TIME <- times(rawData$OCCUR_TIME)
+```
+
+# 2.Transform data
+
+I add 3 more columns for easier data manipulation.
+
+\-`count` is used instead of `INCIDENT_KEY`(too arbitrary).
+
+\-`decimal_hour` is decimal number representation of hours in`OCCUR_TIME`
+
+\-`hour_incident`categorizes each incidient into a 1-hour interval
+
+```{r transform}
+library(dplyr)
+rawData <- rawData %>%  mutate(count=row_number() ,decimal_hour =as.numeric(rawData$OCCUR_TIME) * 24)
+rawData$hour_incident <-cut(rawData$decimal_hour, 
+               breaks = seq(0, 24, by = 1), 
+               labels = seq(0, 23),
+               include.lowest = TRUE)
+```
+
+the final data format will be
+
+```{r,echo=FALSE}
+print(str(rawData))
+```
+
+# 3.DATA OVERVIEW
+
+First we look at total cases reported by NYC Boroughs:
+
+```{r totalCasesByBoro}
+library(ggplot2)
+ggplot(rawData, aes(x = BORO)) + geom_bar(fill = "red") + labs(x="Borough",y = "Cases")
+```
+
+We can clealy see the majority of reports concentrated in 2 boroughs which are Bronx and Brooklyn with Bronx nearly approach 9000 cases and Brooklyn even exceeds that. .Whilst Staten Island has the lowest number of reports with no more than 1500 cases reported.
+
+Next, I plot the crime cases number ( using `count` column ) against the time of the day at which it occurs (using `decimal_hours` ) to see the if there are any relationsionship between time and crime.
+
+```{r,crimVtime}
+crimeVtime <- ggplot(rawData, aes(x=decimal_hour,y = rawData$count,color=BORO )) +
+     scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, by = 2)) +      
+    geom_point    (size = 0.1) + 
+    labs(y = "Case#",x= "Hour") + facet_grid(BORO~.)+
+    theme_minimal()
+print(crimeVtime)
+```
+
+We can vaguely guess the relations between time and crime. The trend seem to be clearer in less reported boroughs. Shooting-incidents tend to occur around night hours and decreases as the morning come.
+
+We will look deeper into this trend in the following section
+
+# 4.Relationship between shootings and time
+I want to look into more detail of which time does the shooting occurs more. To do that, I will plot the percentage of crime occur at each hour of the day. This is done by taking the sum of shooting incidients at each hour divided by the sum of shooting. Each borough will have their own hourly shooting incidents rate.
+```{r calculate_borough_incident_percentages}
+library(purrr)
+boroughs <- unique(rawData$BORO)
+calculate_borough_incident_percentages <- function(data, borough) {
+  borough_data <- data %>% 
+    filter(BORO == borough)
+  
+  borough_sum_count <- nrow(borough_data)
+  
+  borough_hourly_percentage <- borough_data %>%
+    group_by(hour_incident) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    mutate(percentage = count / borough_sum_count * 100,
+           BORO = borough)
+  
+  return(borough_hourly_percentage)
+}
+all_borough_data <- map_df(boroughs, ~calculate_borough_incident_percentages(rawData, .))
+```
+
+
+```{r}
+hourly_incident_rate_plot <- ggplot(all_borough_data, aes(x = hour_incident, y = percentage,color=BORO,group=BORO )) + geom_point(size=2) + geom_line() + facet_grid(BORO~.)
+print(hourly_incident_rate_plot)
+```
+We can see similar trend irrespective of areas. They all peaked around the time between 22-23 PM and gradually decrease and hit lowest at 7AM. The shooting rise again rather soon at around 13PM.
+
+
+# 5.Relationship between shootings and areas 
+We will look into how borough affects the shootings occurence rates, espcially the relationship between median income vs shootings incident.
+
+![household income by borough at https://data.cccnewyork.org/data/table/66/median-incomes#66/107/127/a/a](Screenshot from 2024-10-02 19-07-00.png)
+
+From the image, we can come up with a similar data frame in R
+
+```{r }
+medianBoroIncome <- data.frame( Rank = c(1, 2, 3, 4, 5), BORO = c("STATEN ISLAND", "MANHATTAN", "QUEENS", "BROOKLYN", "BRONX"), All_Households = c(86054, 84435, 73262, 67567, 43011), Families = c(103824, 109977, 81980, 76020, 50523) )
+```
+
+We will plot the total of shooting incidents along side with the median income of each borough to see the relationship
+
+```{r incomeVcrime}
+medianBoroIncome <- medianBoroIncome %>% 
+  left_join(rawData %>% count(BORO, name = "incidents"),by = "BORO" )
+
+incomeVcrime <- ggplot(medianBoroIncome, aes(x= reorder(BORO,All_Households),y=incidents,group=1)) + 
+  geom_point(color = "blue", size = 3) +
+  geom_line(color="blue") + 
+  geom_smooth(method = "lm",se=FALSE,colour = "Red") + 
+  labs(x="Median Income (low to high)",y = " Total Incidents")
+  
+print(incomeVcrime)
+```
+
+There's a clear inverse relationship between median income and the number of shootings in each borough as shown by the red line (using regression model) in the graph.
+
+# 6.Conlcusion
+According to the data, the likelihood of shootings increases in neighborhoods with lower income levels, particularly during late-night hours.
